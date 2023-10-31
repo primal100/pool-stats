@@ -34,6 +34,7 @@ class TeamStats(TypedDict):
 class OverallStats(TypedDict):
     team1: TeamStats
     team2: TeamStats
+    total: TeamStats
 
 
 TeamsLiteral = Literal["team1", "team2"]
@@ -77,7 +78,8 @@ class PoolStatsApp(tk.Tk):
 
         self.team_stats: OverallStats = {
             'team1': self.get_starting_team_stats(),
-            'team2': self.get_starting_team_stats()
+            'team2': self.get_starting_team_stats(),
+            'total': self.get_starting_team_stats()
         }
         self.active_team: TeamsLiteral | None = None
 
@@ -143,7 +145,7 @@ class PoolStatsApp(tk.Tk):
             ('Safety shot', 'unexpected_shots'),
             ('Break shot potted', 'break_potted'),
             ('Break shot missed', 'break_shots'),
-            ('Additional pot', 'additional_pots'),
+            ('Pot Existing Shot', 'additional_pots'),
             ('Foul Existing Shot', 'fouls'),
             ('Foul Only', 'foul_only_shots')
         ]
@@ -261,79 +263,91 @@ class PoolStatsApp(tk.Tk):
         self.team_stats[team][action] += 1
         self.update_stats_display()
 
-    def update_stats_display(self):
-        def generate_stats_text(stats):
+    @staticmethod
+    def generate_stats_text(stats: TeamStats, prev_stats: TeamStats) -> list[tuple[str, str]]:
+        total_pot_attempts = stats['easy_shots'] + stats['difficult_shots']
+        total_shots = stats['easy_shots'] + stats['difficult_shots'] + stats['unexpected_shots'] + stats[
+            'break_shots'] + stats['foul_only_shots']
+        total_potted = stats['easy_potted'] + stats['difficult_potted']
+        total_potted_with_break = total_potted + stats['break_potted']
+        total_pots_with_additional = total_potted_with_break + stats['unexpected_potted'] + stats['additional_pots']
 
-            total_pot_attempts = stats['easy_shots'] + stats['difficult_shots']
-            total_shots = stats['easy_shots'] + stats['difficult_shots'] + stats['unexpected_shots'] + stats[
-                'break_shots'] + stats['foul_only_shots']
-            total_potted = stats['easy_potted'] + stats['difficult_potted']
-            total_potted_with_break = total_potted + stats['break_potted']
-            total_pots_with_additional = total_potted_with_break + stats['unexpected_potted'] + stats['additional_pots']
+        shot_percent = calculate_percentage(total_pots_with_additional, total_shots)
+        pot_percent = calculate_percentage(total_potted, total_pot_attempts)
+        pot_per_visit = total_pots_with_additional / (stats['visits'] or 1)
+        easy_shot_percent = calculate_percentage(stats['easy_potted'], stats['easy_shots'])
+        difficult_shot_percent = calculate_percentage(stats['difficult_potted'], stats['difficult_shots'])
 
-            shot_percent = calculate_percentage(total_pots_with_additional, total_shots)
-            pot_percent = calculate_percentage(total_potted, total_pot_attempts)
-            pot_per_visit = total_pots_with_additional / (stats['visits'] or 1)
-            easy_shot_percent = calculate_percentage(stats['easy_potted'], stats['easy_shots'])
-            difficult_shot_percent = calculate_percentage(stats['difficult_potted'], stats['difficult_shots'])
+        text = []
+        k: StatsLiteral
+        for k, v in stats.items():
+            if not k == "foul_only_shots":
+                tag = "" if v == prev_stats[k] else "bold"
+                text.append((tag, f"{k.replace('_', ' ').capitalize()}: {v}"))
 
-            text = []
-            for k, v in stats.items():
-                if not k == "foul_only_shots":
-                    text.append(f"{k.replace('_', ' ').capitalize()}: {v}")
+        text.append(("", f"Total shots: {total_shots}"))
+        text.append(("", f"Pot %: {pot_percent:.2f}"))
+        text.append(("", f"Shot %: {shot_percent:.2f}"))
+        text.append(("", f"Easy shot %: {easy_shot_percent:.2f}"))
+        text.append(("", f"Difficult shot %: {difficult_shot_percent:.2f}"))
+        text.append(("", f"Pot/visit: {pot_per_visit:.2f}"))
+        text.append(("", ""))
 
-            text.append(f"Total shots: {total_shots}")
-            text.append(f"Pot %: {pot_percent:.2f}")
-            text.append(f"Shot %: {shot_percent:.2f}")
-            text.append(f"Easy shot %: {easy_shot_percent:.2f}")
-            text.append(f"Difficult shot %: {difficult_shot_percent:.2f}")
-            text.append(f"Pot/visit: {pot_per_visit:.2f}")
-            text.append("\n")
+        return text
 
-            return "\n".join(text)
+    def update_stats_display(self) -> None:
+        if self.stats_history:
+            prev_stats = self.stats_history[-1]
+        else:
+            prev_stats = self.team_stats
 
-        total_stats = {k: 0 for k in self.team_stats['team1']}
-        team1_stats_text = generate_stats_text(self.team_stats['team1'])
+        team1_stats_text = self.generate_stats_text(self.team_stats['team1'], prev_stats['team1'])
         self.update_text_widget(self.team1_stats_text, team1_stats_text)
 
-        team2_stats_text = generate_stats_text(self.team_stats['team2'])
+        team2_stats_text = self.generate_stats_text(self.team_stats['team2'], prev_stats['team2'])
         self.update_text_widget(self.team2_stats_text, team2_stats_text)
 
-        for k in total_stats:
-            total_stats[k] = self.team_stats['team1'][k] + self.team_stats['team2'][k]
+        k: StatsLiteral
+        for k in self.team_stats['team1']:
+            self.team_stats['total'][k] = self.team_stats['team1'][k] + self.team_stats['team2'][k]
 
-        total_stats_text = generate_stats_text(total_stats)
+        total_stats_text = self.generate_stats_text(self.team_stats['total'], prev_stats['total'])
         self.update_text_widget(self.total_stats_text, total_stats_text)
 
-    def update_text_widget(self, widget, text):
+    def update_text_widget(self, widget: tk.Text, text: list[tuple[str, str]]):
         widget.config(state=tk.NORMAL)
         widget.delete(1.0, tk.END)
-        widget.insert(1.0, text)
+        for tag, line in text:
+            line = line + "\n"
+            if tag:
+                widget.insert(tk.END, line, tag)
+            else:
+                widget.insert(tk.END, line)
         widget.config(state=tk.DISABLED)
+        widget.tag_configure('bold', font=('TkDefaultFont', 10, 'bold'))
 
     def export_stats(self, btn: tk.Button):
         self.provide_button_feedback(btn)
         # Extracting the stats in order and converting to a tab-delimited string
         stats_order = [
-            'visits', 'easy_shots', 'difficult_shots', 'unexpected_shots', 'break_shots',
-            'easy_potted', 'difficult_potted', 'unexpected_potted', 'break_potted', 'additional_pots', 'fouls',
-            'foul_only_shots'
+            'visits', 'easy_shots', 'easy_potted', 'difficult_shots', 'difficult_potted',
+            'unexpected_shots', 'unexpected_potted', 'break_shots', 'break_potted', 'additional_pots',
+            'fouls', 'foul_only_shots'
         ]
 
         stat: StatsLiteral
         team1_stats = [self.team_stats['team1'][stat] for stat in stats_order]
         team2_stats = [self.team_stats['team2'][stat] for stat in stats_order]
-        total_stats = [self.team_stats['team1'][stat] + self.team_stats['team2'][stat] for stat in stats_order]
 
         # Extracting start and end times
+        self.end_time = self.end_time or datetime.now()
         start_time_str = self.start_time.strftime("%Y-%m-%d %H:%M:%S") if self.start_time else 'N/A'
         end_time_str = self.end_time.strftime("%Y-%m-%d %H:%M:%S") if self.end_time else 'N/A'
 
         export_string = '\t'.join(
             [start_time_str, end_time_str] +
             list(map(str, team1_stats)) +
-            list(map(str, team2_stats)) +
-            list(map(str, total_stats))
+            list(map(str, team2_stats))
         )
 
         # Using the clipboard to copy the export string for easy pasting
