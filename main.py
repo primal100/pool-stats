@@ -1,4 +1,4 @@
-import base64
+from concurrent.futures import ThreadPoolExecutor
 import tkinter as tk
 import tkinter.messagebox as messagebox
 import copy
@@ -10,7 +10,7 @@ from typing import Callable, TypedDict, Literal
 
 
 default_undo_snapshot_size = 5
-geometry = "1500x500"
+geometry = "1600x500"
 gui_state = "normal"
 default_team1_color = "Stripes"
 default_team2_color = "Solids"
@@ -79,12 +79,16 @@ class PoolStatsApp(tk.Tk):
         self.team_stats["team1"] = self.get_starting_team_stats()
         self.team_stats["team2"] = self.get_starting_team_stats()
 
-    def __init__(self, master=None, undo_snapshot_size: int = default_undo_snapshot_size):
+    def __init__(self, master=None, undo_snapshot_size: int = default_undo_snapshot_size,
+                 google_account_file: str = None, gsheets_sheet_name: str = None):
         super().__init__(master)
         self.iconbitmap(icon)
+        self.google_account_file = google_account_file
+        self.gsheets_sheet_name = gsheets_sheet_name
         self.undo_snapshot_size = undo_snapshot_size
         self.master = master
         self.title("Pool Game Statistics")
+        self.executor = ThreadPoolExecutor()
         self.geometry(geometry)
 
         self.team_stats: OverallStats = {
@@ -97,6 +101,7 @@ class PoolStatsApp(tk.Tk):
         # GUI elements
         self.break_buttons = []
         self.stats_history = []
+        self.action_log_history = []
         self.state(gui_state)
         self.setup_ui()
         self.update_stats_display()
@@ -105,24 +110,32 @@ class PoolStatsApp(tk.Tk):
         self.start_time: datetime | None = None
         self.end_time: datetime | None = None
 
-    def store_stats_snapshot(self) -> None:
+        self.protocol("WM_DELETE_WINDOW", self.on_closing)
+
+    def store_snapshots(self) -> None:
         """Store the current state of stats for undo operation."""
-        snapshot = copy.deepcopy(self.team_stats)
-        # Check if stats_history length exceeds the limit
-        if len(self.stats_history) >= self.undo_snapshot_size:
-            self.stats_history.pop(0)  # Remove the oldest snapshot
-        self.stats_history.append(snapshot)
+        stats_snapshot = copy.deepcopy(self.team_stats)
+        action_log_snapshot = self.action_log.get('1.0', tk.END)
+        # Check if length exceeds the limit
+        for snapshots in (self.stats_history, self.action_log_history):
+            if len(snapshots) >= self.undo_snapshot_size:
+                snapshots.pop(0)  # Remove the oldest snapshot
+        self.stats_history.append(stats_snapshot)
+        self.action_log_history.append(action_log_snapshot)
 
     def undo(self, btn: tk.Button) -> None:
         """Undo the last recorded action."""
         logging.debug('Undo requested')
-        self.add_action("Undo")
         self.provide_button_feedback(btn)
 
         if self.stats_history:
             current_team_stats = self.team_stats
             self.team_stats = self.stats_history.pop()
-            self.update_stats_display(current_team_stats)
+            self.update_stats_display(current_team_stats, highlight_changes="italic")
+            if self.action_log_history:
+                action_log_text = self.action_log_history.pop()
+                self.action_log.delete('1.0', tk.END)
+                self.action_log.insert(tk.END, action_log_text)
         else:
             messagebox.showwarning("Undo", "Cannot undo anymore!")
 
@@ -133,7 +146,7 @@ class PoolStatsApp(tk.Tk):
 
         result = messagebox.askyesno("Confirmation", "Are you sure you want to reset all stats?")
         if result:
-            self.store_stats_snapshot()
+            self.store_snapshots()
             # Reset all stats to zero
             self.reset_team_stats()
 
@@ -145,7 +158,7 @@ class PoolStatsApp(tk.Tk):
 
             if default_team1_color not in self.team1_label.cget("text"):
                 self.toggle_teams_colors()
-            self.update_stats_display(bold_changes=False)
+            self.update_stats_display(highlight_changes="")
             self.action_log.delete("1.0", tk.END)
 
     def create_button_frame(self, column_index: int, team: TeamsLiteral) -> tk.Frame:
@@ -159,11 +172,11 @@ class PoolStatsApp(tk.Tk):
             ('Easy shot missed', 'easy_shots'),
             ('Safety unexpected pot', 'safety_potted'),
             ('Safety shot', 'safety_shots'),
-            ('Break shot potted', 'break_potted'),
-            ('Break shot missed', 'break_shots'),
+            ('Foul Only', 'foul_only_shots'),
             ('Pot Existing Shot', 'additional_potted'),
             ('Foul Existing Shot', 'fouls'),
-            ('Foul Only', 'foul_only_shots')
+            ('Break shot potted', 'break_potted'),
+            ('Break shot missed', 'break_shots'),
         ]
 
         for idx, (btn_text, action) in enumerate(buttons_config):
@@ -188,10 +201,13 @@ class PoolStatsApp(tk.Tk):
         btn.configure(command=lambda btn=btn: callback(btn))
         btn.grid(row=row, column=column, pady=20)
 
-    def add_action(self, text: str) -> None:
-        current_time = datetime.now().strftime('%H:%M:%S')
-        message = f'{current_time}: {text}\n'
-        self.action_log.insert('1.0', message)
+    def add_action(self, text: str, append: bool = False) -> None:
+        if append:
+            self.action_log.insert('1.end', f', {text}')
+        else:
+            current_time = datetime.now().strftime('%H:%M:%S')
+            message = f'{current_time}: {text}\n'
+            self.action_log.insert('1.0', message)
         self.action_log.see('1.0')
 
     def setup_ui(self) -> None:
@@ -236,7 +252,7 @@ class PoolStatsApp(tk.Tk):
         self.action_log_label = tk.Label(self, text="Actions", font=("Arial", 16))
         self.action_log_label.grid(row=0, column=5, pady=5, sticky='nw')  # Span the entire width
 
-        self.action_log = tk.Text(self, wrap=tk.NONE, width=45, height=20)  # Adjust width/height as needed
+        self.action_log = tk.Text(self, wrap=tk.NONE, width=60, height=20)  # Adjust width/height as needed
         self.action_log.grid(row=1, rowspan=3, column=5, padx=5, pady=5, sticky='nsew')  # Span the entire width
 
         # Create a vertical scrollbar
@@ -275,14 +291,12 @@ class PoolStatsApp(tk.Tk):
         self.provide_button_feedback(btn)
 
         team_name = team.replace("team", "Team ")
-        action_name = action.replace("_", " ").replace("potted", "ball potted").replace("shots", "shot").replace('fouls', 'Foul').capitalize()
+        action_name = action.replace("_", " ").replace("potted", "ball potted").replace(
+            "shots", "shot").replace( 'foul only shot', 'Foul').replace(
+            'fouls', 'Foul').capitalize()
         if action_name.endswith('shot'):
             action_name = f'{action_name} missed'
-        print(action, action_name)
         message = f"{team_name} {action_name}"
-
-        self.add_action(message)
-
         logging.debug('')
         logging.debug("%s %s", team_name, action_name)
 
@@ -297,7 +311,12 @@ class PoolStatsApp(tk.Tk):
             for break_btn in self.break_buttons:
                 break_btn.config(state=tk.DISABLED)
 
-        self.store_stats_snapshot()
+        self.store_snapshots()
+
+        if any(text == action for text in ("additional_potted", "fouls")):
+            self.add_action(action_name, append=True)
+        else:
+            self.add_action(message, append=False)
 
         if self.active_team != team:
             self.active_team = team
@@ -315,7 +334,7 @@ class PoolStatsApp(tk.Tk):
 
     @staticmethod
     def generate_stats_text(stats: TeamStats, prev_stats: TeamStats, name: str = "",
-                            bold_changes: bool = True) -> list[tuple[str, str]]:
+                            highlight_changes: str = "bold") -> list[tuple[str, str]]:
         total_pot_attempts = stats['easy_shots'] + stats['difficult_shots']
         total_shots = stats['easy_shots'] + stats['difficult_shots'] + stats['safety_shots'] + stats[
             'break_shots'] + stats['foul_only_shots']
@@ -338,7 +357,7 @@ class PoolStatsApp(tk.Tk):
             else:
                 if name:
                     logging.debug("%s %s changed from %s to %s", name, key_name, prev_value, v)
-                tag = "bold" if bold_changes else ""
+                tag = highlight_changes
             if not k == "foul_only_shots":
                 text.append((tag, f"{key_name}: {v}"))
 
@@ -352,16 +371,16 @@ class PoolStatsApp(tk.Tk):
 
         return text
 
-    def update_stats_display(self, prev_stats: OverallStats = None, bold_changes: bool = True) -> None:
+    def update_stats_display(self, prev_stats: OverallStats = None, highlight_changes: str = "bold") -> None:
         if not prev_stats:
             prev_stats = self.stats_history[-1] if self.stats_history else self.team_stats
 
         team1_stats_text = self.generate_stats_text(self.team_stats['team1'], prev_stats['team1'], "Team 1",
-                                                    bold_changes=bold_changes)
+                                                    highlight_changes=highlight_changes)
         self.update_text_widget(self.team1_stats_text, team1_stats_text)
 
         team2_stats_text = self.generate_stats_text(self.team_stats['team2'], prev_stats['team2'], "Team 2",
-                                                    bold_changes=bold_changes)
+                                                    highlight_changes=highlight_changes)
         self.update_text_widget(self.team2_stats_text, team2_stats_text)
 
         k: StatsLiteral
@@ -369,7 +388,7 @@ class PoolStatsApp(tk.Tk):
             self.team_stats['total'][k] = self.team_stats['team1'][k] + self.team_stats['team2'][k]
 
         total_stats_text = self.generate_stats_text(self.team_stats['total'], prev_stats['total'],
-                                                    bold_changes=bold_changes)
+                                                    highlight_changes=highlight_changes)
         self.update_text_widget(self.total_stats_text, total_stats_text)
 
     def update_text_widget(self, widget: tk.Text, text: list[tuple[str, str]]):
@@ -383,6 +402,19 @@ class PoolStatsApp(tk.Tk):
                 widget.insert(tk.END, line)
         widget.config(state=tk.DISABLED)
         widget.tag_configure('bold', font=('TkDefaultFont', 10, 'bold'))
+        widget.tag_configure('italic', font=('TkDefaultFont', 10, 'italic'))
+
+    def upload_to_gsheets(self, data: list[str]) -> str:
+        import gspread
+        gc = gspread.service_account(self.google_account_file)
+        spreadsheet = gc.open(self.gsheets_sheet_name)
+        worksheet = spreadsheet.get_worksheet(0)
+        if first_empty_row_in_column_a := worksheet.find("", in_column=1):
+            row = first_empty_row_in_column_a.row
+            worksheet.update(f'A{row}:Z{row}', [data])
+            return f"Team 1 and Team 2 Stats have been inserted into Google Sheets {self.gsheets_sheet_name} first sheet row {row}!"
+        worksheet.append_row(data)
+        return f"Team 1 and Team 2 Stats have been appended to Google Sheets {self.gsheets_sheet_name} first sheet!"
 
     def export_stats(self, btn: tk.Button):
         self.provide_button_feedback(btn)
@@ -402,18 +434,25 @@ class PoolStatsApp(tk.Tk):
         start_time_str = self.start_time.strftime("%Y-%m-%d %H:%M:%S") if self.start_time else 'N/A'
         end_time_str = self.end_time.strftime("%Y-%m-%d %H:%M:%S") if self.end_time else 'N/A'
 
-        export_string = '\t'.join(
-            [start_time_str, end_time_str] +
-            list(map(str, team1_stats)) +
-            list(map(str, team2_stats))
-        )
+        data = [start_time_str, end_time_str] + team1_stats + team2_stats
 
-        # Using the clipboard to copy the export string for easy pasting
-        self.clipboard_clear()
-        self.clipboard_append(export_string)
-        self.update()  # This is to make sure the clipboard is updated immediately
-        messagebox.showinfo("Exported",
-                            "Team 1 and Team 2 Stats have been copied to clipboard for pasting into a spreadsheet!")
+        if self.google_account_file and self.gsheets_sheet_name:
+            fut = self.executor.submit(self.upload_to_gsheets, data)
+            fut.add_done_callback(lambda future: messagebox.showinfo("Exported", future.result()))
+        else:
+            export_string = '\t'.join(list(map(str, data)))
+            # Using the clipboard to copy the export string for easy pasting
+            self.clipboard_clear()
+            self.clipboard_append(export_string)
+            self.update()  # This is to make sure the clipboard is updated immediately
+            message = "Team 1 and Team 2 Stats have been copied to clipboard for pasting into a spreadsheet!"
+            messagebox.showinfo("Exported", message)
+
+    def on_closing(self):
+        # Shutdown the thread pool executor
+        self.executor.shutdown(wait=True)
+        # Destroy the window
+        self.destroy()
 
 
 if __name__ == "__main__":
@@ -425,11 +464,19 @@ if __name__ == "__main__":
     parser.add_argument("--log-level", type=str, choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
                         default='DEBUG', help="Set the logging level.")
 
+    parser.add_argument("--google-account-file", type=str,
+                        help="Path to a google service account .json file for uploading data to Google Sheets.")
+
+    parser.add_argument("--gsheets-sheet_name", type=str,
+                        help="Name of a Google Sheets spreadsheet.")
+
     args = parser.parse_args()
 
     logging.basicConfig(level=args.log_level,
                         format='%(asctime)s - %(message)s',
                         datefmt='%Y-%m-%d %H:%M:%S')
 
-    app = PoolStatsApp(undo_snapshot_size=args.undo_snapshot_size)
+    app = PoolStatsApp(undo_snapshot_size=args.undo_snapshot_size,
+                       google_account_file=args.google_account_file,
+                       gsheets_sheet_name=args.gsheets_sheet_name)
     app.mainloop()
