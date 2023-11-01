@@ -233,7 +233,7 @@ class PoolStatsApp(tk.Tk):
         self.add_action_button("Reset", 2, 4, self.reset)
 
         # Add the new Text widget for action logging along the bottom
-        self.action_log_label = tk.Label(self, text="Action Log", font=("Arial", 16))
+        self.action_log_label = tk.Label(self, text="Actions", font=("Arial", 16))
         self.action_log_label.grid(row=0, column=5, pady=5, sticky='nw')  # Span the entire width
 
         self.action_log = tk.Text(self, wrap=tk.NONE, width=45, height=20)  # Adjust width/height as needed
