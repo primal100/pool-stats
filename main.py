@@ -25,6 +25,10 @@ def calculate_percentage(numerator: float, denominator: float) -> float:
     return (numerator / denominator) * 100 if denominator else 0.0
 
 
+class IncorrectVisitsError(BaseException):
+    pass
+
+
 class TeamStats(TypedDict):
     visits: int
     easy_shots: int
@@ -97,6 +101,8 @@ class PoolStatsApp(tk.Tk):
             'total': self.get_starting_team_stats()
         }
         self.active_team: TeamsLiteral | None = None
+        self.active_team_history: list[TeamsLiteral | None] = []
+        self.standby_team: TeamsLiteral | None = None
 
         # GUI elements
         self.break_buttons = []
@@ -110,10 +116,13 @@ class PoolStatsApp(tk.Tk):
         self.start_time: datetime | None = None
         self.end_time: datetime | None = None
 
+        self.break_team: TeamsLiteral | None = None
+
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
 
     def store_snapshots(self) -> None:
         """Store the current state of stats for undo operation."""
+        logging.debug('Storing snapshots for active team %s', self.active_team)
         stats_snapshot = copy.deepcopy(self.team_stats)
         action_log_snapshot = self.action_log.get('1.0', tk.END)
         # Check if length exceeds the limit
@@ -122,6 +131,7 @@ class PoolStatsApp(tk.Tk):
                 snapshots.pop(0)  # Remove the oldest snapshot
         self.stats_history.append(stats_snapshot)
         self.action_log_history.append(action_log_snapshot)
+        self.active_team_history.append(self.active_team)
 
     def undo(self, btn: tk.Button) -> None:
         """Undo the last recorded action."""
@@ -136,6 +146,8 @@ class PoolStatsApp(tk.Tk):
                 action_log_text = self.action_log_history.pop()
                 self.action_log.delete('1.0', tk.END)
                 self.action_log.insert(tk.END, action_log_text)
+            if self.active_team_history:
+                self.set_active_team(self.active_team_history.pop())
         else:
             messagebox.showwarning("Undo", "Cannot undo anymore!")
 
@@ -209,6 +221,15 @@ class PoolStatsApp(tk.Tk):
             message = f'{current_time}: {text}\n'
             self.action_log.insert('1.0', message)
         self.action_log.see('1.0')
+
+    def set_active_team(self, team: TeamsLiteral):
+        logging.debug('Setting active team to %s', team)
+        self.active_team = team
+        self.standby_team = "team1" if self.active_team == "team2" else "team2"
+        active_label = self.team1_label if self.active_team == "team1" else self.team2_label
+        active_label.config(font=("Arial", 16, "bold"))
+        standby_label = self.team1_label if self.standby_team == "team1" else self.team2_label
+        standby_label.config(font=("Arial", 16))
 
     def setup_ui(self) -> None:
         # Team 1 Buttons
@@ -310,17 +331,34 @@ class PoolStatsApp(tk.Tk):
             # Disable both break buttons if a break shot is recorded
             for break_btn in self.break_buttons:
                 break_btn.config(state=tk.DISABLED)
+            self.break_team = team
+
+        increment_visits = False
+        set_active_team = False
+        if self.active_team != team or "break" in action:
+            set_active_team = True
+            other: TeamsLiteral = "team1" if team == "team2" else "team2"  # Incorrect type error in pycharm
+            if self.team_stats[team]['visits'] - self.team_stats[other]['visits'] > 0:
+                raise IncorrectVisitsError(
+                    f'This would cause number of visits of {team} to be more than 1 more than {self.standby_team}')
+            if team != self.break_team and self.team_stats[self.break_team]['visits'] < self.team_stats[team]['visits']:
+                raise IncorrectVisitsError(
+                    f'This would cause number of visits of break team {self.break_team} to be less than {team}')
+            increment_visits = True
 
         self.store_snapshots()
+
+        # Following needs to be done after snapshots are stored
+        if increment_visits:
+            self.team_stats[team]['visits'] += 1
+
+        if set_active_team:
+            self.active_team = team
 
         if any(text == action for text in ("additional_potted", "fouls")):
             self.add_action(action_name, append=True)
         else:
             self.add_action(message, append=False)
-
-        if self.active_team != team:
-            self.active_team = team
-            self.team_stats[team]['visits'] += 1
 
         if action in ['difficult_potted', 'easy_potted', 'safety_potted', 'break_potted']:
             shot_type = action.split('_')[0]
@@ -467,7 +505,7 @@ if __name__ == "__main__":
     parser.add_argument("--google-account-file", type=str,
                         help="Path to a google service account .json file for uploading data to Google Sheets.")
 
-    parser.add_argument("--gsheets-sheet_name", type=str,
+    parser.add_argument("--gsheets-sheet-name", type=str,
                         help="Name of a Google Sheets spreadsheet.")
 
     args = parser.parse_args()
