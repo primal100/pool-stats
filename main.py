@@ -29,6 +29,10 @@ class IncorrectVisitsError(BaseException):
     pass
 
 
+class WrongTeamShotError(BaseException):
+    pass
+
+
 class TeamStats(TypedDict):
     visits: int
     easy_shots: int
@@ -104,6 +108,14 @@ class PoolStatsApp(tk.Tk):
         self.active_team_history: list[TeamsLiteral | None] = []
         self.standby_team: TeamsLiteral | None = None
 
+        self.shots_left = 1
+        self.shots_left_history: list[int] = []
+        self.shots_taken_current_visit = 0
+        self.shots_taken_current_visit_history: list[int] = []
+
+        self.team_buttons: dict[str, list[tk.Button]] = {'team1': [], 'team2': []}
+        self.team_additional_shot_buttons: dict[str, list[tk.Button]] = {'team1': [], 'team2': []}
+
         # GUI elements
         self.break_buttons = []
         self.stats_history = []
@@ -117,7 +129,7 @@ class PoolStatsApp(tk.Tk):
         self.end_time: datetime | None = None
 
         self.break_team: TeamsLiteral | None = None
-
+        self.set_active_team(None)
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
 
     def store_snapshots(self) -> None:
@@ -126,12 +138,15 @@ class PoolStatsApp(tk.Tk):
         stats_snapshot = copy.deepcopy(self.team_stats)
         action_log_snapshot = self.action_log.get('1.0', tk.END)
         # Check if length exceeds the limit
-        for snapshots in (self.stats_history, self.action_log_history):
+        for snapshots in (self.stats_history, self.action_log_history,
+                          self.active_team_history, self.shots_left_history, self.shots_taken_current_visit_history):
             if len(snapshots) >= self.undo_snapshot_size:
                 snapshots.pop(0)  # Remove the oldest snapshot
         self.stats_history.append(stats_snapshot)
         self.action_log_history.append(action_log_snapshot)
         self.active_team_history.append(self.active_team)
+        self.shots_left_history.append(self.shots_left)
+        self.shots_taken_current_visit_history.append(self.shots_taken_current_visit)
 
     def undo(self, btn: tk.Button) -> None:
         """Undo the last recorded action."""
@@ -148,6 +163,10 @@ class PoolStatsApp(tk.Tk):
                 self.action_log.insert(tk.END, action_log_text)
             if self.active_team_history:
                 self.set_active_team(self.active_team_history.pop())
+            if self.shots_left_history:
+                self.shots_left = self.shots_left_history.pop()
+            if self.shots_taken_current_visit:
+                self.shots_taken_current_visit = self.shots_taken_current_visit_history.pop()
         else:
             messagebox.showwarning("Undo", "Cannot undo anymore!")
 
@@ -162,16 +181,13 @@ class PoolStatsApp(tk.Tk):
             # Reset all stats to zero
             self.reset_team_stats()
 
-            # Re-enable break buttons
-            for button in self.break_buttons:
-                button.config(state=tk.NORMAL)
-
             self.start_time = self.end_time = None
 
             if default_team1_color not in self.team1_label.cget("text"):
                 self.toggle_teams_colors()
             self.update_stats_display(highlight_changes="")
             self.action_log.delete("1.0", tk.END)
+            self.set_active_team(None)
 
     def create_button_frame(self, column_index: int, team: TeamsLiteral) -> tk.Frame:
         frame = tk.Frame(self, padx=10, pady=10)
@@ -200,6 +216,10 @@ class PoolStatsApp(tk.Tk):
             if "break" in action:
                 self.break_buttons.append(btn)
 
+            elif any(a == action for a in ('additional_potted', 'fouls')):
+                self.team_additional_shot_buttons[team].append(btn)
+            else:
+                self.team_buttons[team].append(btn)
         return frame
 
     def create_stats_text_widget(self, column_index: int) -> tk.Text:
@@ -222,14 +242,31 @@ class PoolStatsApp(tk.Tk):
             self.action_log.insert('1.0', message)
         self.action_log.see('1.0')
 
-    def set_active_team(self, team: TeamsLiteral):
+    def set_active_team(self, team: TeamsLiteral | None):
         logging.debug('Setting active team to %s', team)
         self.active_team = team
-        self.standby_team = "team1" if self.active_team == "team2" else "team2"
-        active_label = self.team1_label if self.active_team == "team1" else self.team2_label
-        active_label.config(font=("Arial", 16, "bold"))
-        standby_label = self.team1_label if self.standby_team == "team1" else self.team2_label
-        standby_label.config(font=("Arial", 16))
+        self.standby_team = ("team1" if self.active_team == "team2" else "team2") if self.active_team else None
+        self.shots_left = 1
+        self.shots_taken_current_visit = 0
+        if self.active_team:
+            active_label = self.team1_label if self.active_team == "team1" else self.team2_label
+            active_label.config(font=("Arial", 16, "bold"))
+            standby_label = self.team1_label if self.standby_team == "team1" else self.team2_label
+            standby_label.config(font=("Arial", 16))
+        else:
+            self.team1_label.config(font=("Arial", 16))
+            self.team2_label.config(font=("Arial", 16))
+        if self.active_team:
+            for btn in self.team_buttons[self.standby_team]:
+                btn.config(state=tk.DISABLED)
+            for btn in self.team_buttons[self.active_team]:
+                btn.config(state=tk.NORMAL)
+        else:
+            for btn in self.team_buttons["team1"] + self.team_additional_shot_buttons["team1"] + self.team_buttons["team2"] + self.team_additional_shot_buttons["team2"]:
+                btn.config(state=tk.DISABLED)
+            # Re-enable break buttons
+            for button in self.break_buttons:
+                button.config(state=tk.NORMAL)
 
     def setup_ui(self) -> None:
         # Team 1 Buttons
@@ -321,9 +358,14 @@ class PoolStatsApp(tk.Tk):
         logging.debug('')
         logging.debug("%s %s", team_name, action_name)
 
+        if self.active_team and not any(text == action for text in ("additional_potted", "fouls")) and not team == self.active_team:
+            raise WrongTeamShotError(f"Active team is {self.active_team} but {team} shot")
+
         if "break" in action and self.team_stats[team]['break_shots'] > 0:
             messagebox.showerror("Error", "Only one break shot allowed!")
             return
+
+        other_team: TeamsLiteral = "team1" if team == "team2" else "team2"  # Incorrect type error in pycharm
 
         # Set the start time if it's a break shot and start time is not set
         if "break" in action and not self.start_time:
@@ -332,13 +374,12 @@ class PoolStatsApp(tk.Tk):
             for break_btn in self.break_buttons:
                 break_btn.config(state=tk.DISABLED)
             self.break_team = team
+            self.set_active_team(team) if action == "break_potted" else self.set_active_team(other_team)
 
         increment_visits = False
-        set_active_team = False
-        if self.active_team != team or "break" in action:
-            set_active_team = True
-            other: TeamsLiteral = "team1" if team == "team2" else "team2"  # Incorrect type error in pycharm
-            if self.team_stats[team]['visits'] - self.team_stats[other]['visits'] > 0:
+
+        if self.shots_taken_current_visit == 0 and not any(a == action for a in ("additional_potted", "fouls")):
+            if self.team_stats[team]['visits'] - self.team_stats[other_team]['visits'] > 0:
                 raise IncorrectVisitsError(
                     f'This would cause number of visits of {team} to be more than 1 more than {self.standby_team}')
             if team != self.break_team and self.team_stats[self.break_team]['visits'] < self.team_stats[team]['visits']:
@@ -351,9 +392,10 @@ class PoolStatsApp(tk.Tk):
         # Following needs to be done after snapshots are stored
         if increment_visits:
             self.team_stats[team]['visits'] += 1
-
-        if set_active_team:
-            self.active_team = team
+            for btn in self.team_additional_shot_buttons[other_team]:
+                btn.config(state=tk.DISABLED)
+            for btn in self.team_additional_shot_buttons[team]:
+                btn.config(state=tk.NORMAL)
 
         if any(text == action for text in ("additional_potted", "fouls")):
             self.add_action(action_name, append=True)
@@ -363,9 +405,19 @@ class PoolStatsApp(tk.Tk):
         if action in ['difficult_potted', 'easy_potted', 'safety_potted', 'break_potted']:
             shot_type = action.split('_')[0]
             self.team_stats[team][f"{shot_type}_shots"] += 1
+        elif not action == "additional_potted":
+            self.shots_left -= 1
 
         if action == 'foul_only_shots':
             self.team_stats[team]['fouls'] += 1
+
+        if "foul" in action:
+            self.set_active_team(other_team)
+            self.shots_left += 1
+        elif self.shots_left == 0:
+            self.set_active_team(other_team)
+        elif not action == "additional_potted":
+            self.shots_taken_current_visit += 1
 
         self.team_stats[team][action] += 1
         self.update_stats_display()
