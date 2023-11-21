@@ -6,7 +6,37 @@ from datetime import datetime
 import argparse
 import logging
 import os
+import pyttsx3
 from typing import Callable, TypedDict, Literal
+
+
+voice_rate = 150
+voice: Literal['male', 'female'] = 'male'
+
+
+class TTSHandler(logging.Handler):
+    def __init__(self):
+        super().__init__()
+        self.engine = pyttsx3.init()
+        self.engine.setProperty('rate', voice_rate)
+        voices = self.engine.getProperty('voices')
+        voice_index = 0 if voice == "male" else 1
+        voice_id = voices[voice_index].id
+        logger.debug('Setting TTS voice %s', voice_id)
+        self.engine.setProperty('voice', voice_id)
+        self.executor = ThreadPoolExecutor(max_workers=1)
+
+    def say(self, msg: str) -> None:
+        self.engine.say(msg)
+        self.engine.runAndWait()
+
+    def emit(self, record):
+        try:
+            msg = self.format(record)
+            self.executor.submit(self.say, msg)
+        except Exception as e:
+            self.handleError(record)
+
 
 
 default_undo_snapshot_size = 5
@@ -19,6 +49,10 @@ icon_fname = "00546aecf458d72e9e2c3e9457a14a5f.ico"
 
 current_directory = os.path.dirname(os.path.abspath(__file__))
 icon = os.path.join(current_directory, icon_fname)
+
+
+logger = logging.getLogger("normal")
+voice_logger = logging.getLogger("voice")
 
 
 def calculate_percentage(numerator: float, denominator: float) -> float:
@@ -134,7 +168,7 @@ class PoolStatsApp(tk.Tk):
 
     def store_snapshots(self) -> None:
         """Store the current state of stats for undo operation."""
-        logging.debug('Storing snapshots for active team %s', self.active_team)
+        logger.debug('Storing snapshots for active team %s', self.active_team)
         stats_snapshot = copy.deepcopy(self.team_stats)
         action_log_snapshot = self.action_log.get('1.0', tk.END)
         # Check if length exceeds the limit
@@ -150,7 +184,7 @@ class PoolStatsApp(tk.Tk):
 
     def undo(self, btn: tk.Button) -> None:
         """Undo the last recorded action."""
-        logging.debug('Undo requested')
+        logger.debug('Undo requested')
         self.provide_button_feedback(btn)
 
         if self.stats_history:
@@ -172,7 +206,7 @@ class PoolStatsApp(tk.Tk):
 
     def reset(self, btn: tk.Button) -> None:
         """Reset all stats."""
-        logging.debug('Reset requested')
+        logger.debug('Reset requested')
         self.provide_button_feedback(btn)
 
         result = messagebox.askyesno("Confirmation", "Are you sure you want to reset all stats?")
@@ -243,7 +277,7 @@ class PoolStatsApp(tk.Tk):
         self.action_log.see('1.0')
 
     def set_active_team(self, team: TeamsLiteral | None):
-        logging.debug('Setting active team to %s', team)
+        logger.debug('Setting active team to %s', team)
         self.active_team = team
         self.standby_team = ("team1" if self.active_team == "team2" else "team2") if self.active_team else None
         self.shots_left = 1
@@ -335,7 +369,7 @@ class PoolStatsApp(tk.Tk):
     def complete_game(self, btn: tk.Button):
         self.provide_button_feedback(btn)
         self.end_time = datetime.now()
-        logging.debug('Game completed')
+        logger.debug('Game completed')
         self.add_action("Game complete")
         self.update_stats_display()
 
@@ -355,8 +389,8 @@ class PoolStatsApp(tk.Tk):
         if action_name.endswith('shot'):
             action_name = f'{action_name} missed'
         message = f"{team_name} {action_name}"
-        logging.debug('')
-        logging.debug("%s %s", team_name, action_name)
+        logger.debug('')
+        logger.debug("%s %s", team_name, action_name)
 
         if self.active_team and not any(text == action for text in ("additional_potted", "fouls")) and not team == self.active_team:
             raise WrongTeamShotError(f"Active team is {self.active_team} but {team} shot")
@@ -446,8 +480,10 @@ class PoolStatsApp(tk.Tk):
                 tag = ""
             else:
                 if name:
-                    logging.debug("%s %s changed from %s to %s", name, key_name, prev_value, v)
+                    logger.debug("%s %s changed from %s to %s", name, key_name, prev_value, v)
                 tag = highlight_changes
+                voice_log_level = logging.DEBUG if name.startswith("Total") else logging.INFO
+                voice_logger.log(voice_log_level, "%s %s changed from %s to %s", name, key_name, prev_value, v)
             if not k == "foul_only_shots":
                 text.append((tag, f"{key_name}: {v}"))
 
@@ -477,7 +513,7 @@ class PoolStatsApp(tk.Tk):
         for k in self.team_stats['team1']:
             self.team_stats['total'][k] = self.team_stats['team1'][k] + self.team_stats['team2'][k]
 
-        total_stats_text = self.generate_stats_text(self.team_stats['total'], prev_stats['total'],
+        total_stats_text = self.generate_stats_text(self.team_stats['total'], prev_stats['total'], "Total",
                                                     highlight_changes=highlight_changes)
         self.update_text_widget(self.total_stats_text, total_stats_text)
 
@@ -554,6 +590,9 @@ if __name__ == "__main__":
     parser.add_argument("--log-level", type=str, choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
                         default='DEBUG', help="Set the logging level.")
 
+    parser.add_argument("--voice-log-level", type=str, choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
+                        default='INFO', help="Set the voice logging level.")
+
     parser.add_argument("--google-account-file", type=str,
                         help="Path to a google service account .json file for uploading data to Google Sheets.")
 
@@ -562,9 +601,19 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    logging.basicConfig(level=args.log_level,
-                        format='%(asctime)s - %(message)s',
-                        datefmt='%Y-%m-%d %H:%M:%S')
+    logger.setLevel(level=logging.getLevelName(args.log_level))
+    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+                                  datefmt='%Y-%m-%d %H:%M:%S')
+    handler = logging.StreamHandler()
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
+    logger.propagate = False
+    voice_handler = TTSHandler()
+    voice_logger.setLevel(level=logging.getLevelName(args.voice_log_level))
+    voice_formatter = logging.Formatter('%(message)s')
+    voice_handler.setFormatter(voice_formatter)
+    voice_logger.addHandler(voice_handler)
+    voice_logger.propagate = False
 
     app = PoolStatsApp(undo_snapshot_size=args.undo_snapshot_size,
                        google_account_file=args.google_account_file,
