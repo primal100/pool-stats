@@ -148,7 +148,7 @@ class PoolStatsApp(tk.Tk):
         self.shots_taken_current_visit_history: list[int] = []
 
         self.team_buttons: dict[str, list[tk.Button]] = {'team1': [], 'team2': []}
-        self.team_additional_shot_buttons: dict[str, list[tk.Button]] = {'team1': [], 'team2': []}
+        self.team_additional_shot_buttons: dict[str, dict[str, tk.Button]] = {'team1': {}, 'team2': {}}
 
         # GUI elements
         self.break_buttons = []
@@ -255,9 +255,8 @@ class PoolStatsApp(tk.Tk):
             # Storing reference to the break buttons
             if "break" in action:
                 self.break_buttons.append(btn)
-
             elif any(a == action for a in ('additional_potted', 'fouls')):
-                self.team_additional_shot_buttons[team].append(btn)
+                self.team_additional_shot_buttons[team][action] = btn
             else:
                 self.team_buttons[team].append(btn)
         return frame
@@ -302,7 +301,8 @@ class PoolStatsApp(tk.Tk):
             for btn in self.team_buttons[self.active_team]:
                 btn.config(state=tk.NORMAL)
         else:
-            for btn in self.team_buttons["team1"] + self.team_additional_shot_buttons["team1"] + self.team_buttons["team2"] + self.team_additional_shot_buttons["team2"]:
+            for btn in self.team_buttons["team1"] + list(self.team_additional_shot_buttons["team1"].values()) + \
+                       self.team_buttons["team2"] + list(self.team_additional_shot_buttons["team2"].values()):
                 btn.config(state=tk.DISABLED)
             # Re-enable break buttons
             for button in self.break_buttons:
@@ -436,21 +436,26 @@ class PoolStatsApp(tk.Tk):
         # Following needs to be done after snapshots are stored
         if increment_visits:
             self.team_stats[team]['visits'] += 1
-            for btn in self.team_additional_shot_buttons[other_team]:
+            for btn in self.team_additional_shot_buttons[other_team].values():
                 btn.config(state=tk.DISABLED)
-            for btn in self.team_additional_shot_buttons[team]:
-                btn.config(state=tk.NORMAL)
+            btn = self.team_additional_shot_buttons[team]['fouls']
+            btn.config(state=tk.NORMAL)
 
         if any(text == action for text in ("additional_potted", "fouls")):
             self.add_action(action_name, append=True)
         else:
             self.add_action(message, append=False)
 
+        additional_pot_btn = self.team_additional_shot_buttons[team]['additional_potted']
         if action in ['difficult_potted', 'easy_potted', 'safety_potted', 'break_potted']:
             shot_type = action.split('_')[0]
             self.team_stats[team][f"{shot_type}_shots"] += 1
-        elif not action == "additional_potted":
+            additional_pot_btn.config(state=tk.NORMAL)
+        elif action == "additional_potted":
+            additional_pot_btn.config(state=tk.NORMAL)
+        else:
             self.shots_left -= 1
+            additional_pot_btn.config(state=tk.DISABLED)
 
         if action == 'foul_only_shots':
             self.team_stats[team]['fouls'] += 1
