@@ -12,6 +12,20 @@ from typing import Callable, TypedDict, Literal
 
 voice_rate = 150
 voice: Literal['male', 'female'] = 'male'
+default_undo_snapshot_size = 5
+geometry = "1600x500"
+gui_state = "normal"
+default_team1_color = "Stripes"
+default_team2_color = "Solids"
+icon_fname = "00546aecf458d72e9e2c3e9457a14a5f.ico"
+
+
+current_directory = os.path.dirname(os.path.abspath(__file__))
+icon = os.path.join(current_directory, icon_fname)
+
+
+logger = logging.getLogger("normal")
+voice_logger = logging.getLogger("voice")
 
 
 class TTSHandler(logging.Handler):
@@ -36,23 +50,6 @@ class TTSHandler(logging.Handler):
             self.executor.submit(self.say, msg)
         except Exception as e:
             self.handleError(record)
-
-
-
-default_undo_snapshot_size = 5
-geometry = "1600x500"
-gui_state = "normal"
-default_team1_color = "Stripes"
-default_team2_color = "Solids"
-icon_fname = "00546aecf458d72e9e2c3e9457a14a5f.ico"
-
-
-current_directory = os.path.dirname(os.path.abspath(__file__))
-icon = os.path.join(current_directory, icon_fname)
-
-
-logger = logging.getLogger("normal")
-voice_logger = logging.getLogger("voice")
 
 
 def calculate_percentage(numerator: float, denominator: float) -> float:
@@ -133,6 +130,9 @@ class PoolStatsApp(tk.Tk):
         self.executor = ThreadPoolExecutor()
         self.geometry(geometry)
 
+        self.team1_color = default_team1_color
+        self.team2_color = default_team2_color
+
         self.team_stats: OverallStats = {
             'team1': self.get_starting_team_stats(),
             'team2': self.get_starting_team_stats(),
@@ -181,6 +181,11 @@ class PoolStatsApp(tk.Tk):
         self.active_team_history.append(self.active_team)
         self.shots_left_history.append(self.shots_left)
         self.shots_taken_current_visit_history.append(self.shots_taken_current_visit)
+        logger.info(self.shots_taken_current_visit_history)
+
+    def call_out_next_color(self, level: int) -> None:
+        color = self.team1_color if self.active_team == "team1" else self.team2_color
+        voice_logger.log(level, "Next turn is %s", color)
 
     def undo(self, btn: tk.Button) -> None:
         """Undo the last recorded action."""
@@ -199,8 +204,9 @@ class PoolStatsApp(tk.Tk):
                 self.set_active_team(self.active_team_history.pop())
             if self.shots_left_history:
                 self.shots_left = self.shots_left_history.pop()
-            if self.shots_taken_current_visit:
+            if self.shots_taken_current_visit_history:
                 self.shots_taken_current_visit = self.shots_taken_current_visit_history.pop()
+            self.call_out_next_color(logging.INFO)
         else:
             messagebox.showwarning("Undo", "Cannot undo anymore!")
 
@@ -354,13 +360,16 @@ class PoolStatsApp(tk.Tk):
         self.action_log.config(yscrollcommand=self.action_log_scrollbar.set)
 
     def toggle_teams_colors(self, reset: bool = False):
-        # Check the current label text for Team 1
-        if reset or default_team1_color not in self.team1_label.cget("text"):
+        if reset or self.team1_color == default_team2_color:
             self.team1_label.config(text=f"Team 1 ({default_team1_color})")
             self.team2_label.config(text=f"Team 2 ({default_team2_color})")
+            self.team1_color = default_team1_color
+            self.team2_color = default_team2_color
         else:
             self.team1_label.config(text=f"Team 1 ({default_team2_color})")
             self.team2_label.config(text=f"Team 2 ({default_team1_color})")
+            self.team1_color = default_team2_color
+            self.team2_color = default_team1_color
 
     def toggle_teams(self, btn: tk.Button):
         self.provide_button_feedback(btn)
@@ -400,6 +409,7 @@ class PoolStatsApp(tk.Tk):
             return
 
         other_team: TeamsLiteral = "team1" if team == "team2" else "team2"  # Incorrect type error in pycharm
+        team_changed = False
 
         # Set the start time if it's a break shot and start time is not set
         if "break" in action and not self.start_time:
@@ -447,14 +457,19 @@ class PoolStatsApp(tk.Tk):
 
         if "foul" in action:
             self.set_active_team(other_team)
+            team_changed = True
             self.shots_left += 1
         elif self.shots_left == 0:
             self.set_active_team(other_team)
+            team_changed = True
         elif not action == "additional_potted":
             self.shots_taken_current_visit += 1
 
         self.team_stats[team][action] += 1
         self.update_stats_display()
+
+        voice_level = logging.INFO if team_changed else logging.DEBUG    # Implemented so can be changed
+        self.call_out_next_color(voice_level)
 
     @staticmethod
     def generate_stats_text(stats: TeamStats, prev_stats: TeamStats, name: str = "",
