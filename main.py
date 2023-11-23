@@ -636,11 +636,10 @@ if __name__ == "__main__":
     handler.setFormatter(formatter)
     logger.addHandler(handler)
     logger.propagate = False
-    voice_handler = TTSHandler()
     voice_logger.setLevel(level=logging.getLevelName(args.voice_log_level))
     voice_formatter = logging.Formatter('%(message)s')
-    voice_handler.setFormatter(voice_formatter)
-    voice_logger.addHandler(voice_handler)
+    voice_queue_handler.setFormatter(voice_formatter)
+    voice_logger.addHandler(voice_queue_handler)
     voice_logger.propagate = False
 
     app = PoolStatsApp(undo_snapshot_size=args.undo_snapshot_size,
