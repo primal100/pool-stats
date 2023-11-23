@@ -5,7 +5,9 @@ import copy
 from datetime import datetime
 import argparse
 import logging
+from logging.handlers import QueueHandler, QueueListener
 import os
+from queue import Queue
 import pyttsx3
 from typing import Callable, TypedDict, Literal
 
@@ -28,6 +30,9 @@ logger = logging.getLogger("normal")
 voice_logger = logging.getLogger("voice")
 
 
+voice_queue: Queue[logging.LogRecord] = Queue()
+
+
 class TTSHandler(logging.Handler):
     def __init__(self):
         super().__init__()
@@ -38,18 +43,21 @@ class TTSHandler(logging.Handler):
         voice_id = voices[voice_index].id
         logger.debug('Setting TTS voice %s', voice_id)
         self.engine.setProperty('voice', voice_id)
-        self.executor = ThreadPoolExecutor(max_workers=1)
 
-    def say(self, msg: str) -> None:
-        self.engine.say(msg)
-        self.engine.runAndWait()
-
-    def emit(self, record):
+    def emit(self, record: logging.LogRecord) -> None:
         try:
             msg = self.format(record)
-            self.executor.submit(self.say, msg)
+            self.engine.say(msg)
+            if voice_queue.empty():
+                self.engine.runAndWait()
         except Exception as e:
             self.handleError(record)
+
+
+voice_queue_handler = QueueHandler(voice_queue)
+tts_handler = TTSHandler()
+voice_queue_listener = QueueListener(voice_queue, tts_handler, respect_handler_level=True)
+voice_queue_listener.start()
 
 
 def calculate_percentage(numerator: float, denominator: float) -> float:
