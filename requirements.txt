@@ -1,2 +1,6 @@
 gspread
 pyttsx3
+SpeechRecognition
+pyaudio
+fuzzywuzzy
+python-Levenshtein

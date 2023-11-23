@@ -8,7 +8,9 @@ import logging
 from logging.handlers import QueueHandler, QueueListener
 import os
 from queue import Queue
+import speech_recognition as sr
 import pyttsx3
+from fuzzywuzzy import process
 from typing import Callable, TypedDict, Literal
 
 
@@ -31,6 +33,43 @@ voice_logger = logging.getLogger("voice")
 
 
 voice_queue: Queue[logging.LogRecord] = Queue()
+
+
+class Listener:
+    def __init__(self, buttons: dict[str, tk.Button]):
+        self.recognizer = sr.Recognizer()
+        self.executor = ThreadPoolExecutor(max_workers=1)
+        self.buttons = buttons
+
+    def trigger_button(self, text: str) -> None:
+        button = self.buttons[text]
+        logger.info('Voice requested button click: %s', text)
+        button.invoke()
+
+    def _listen(self):
+        with sr.Microphone() as source:
+            voice_queue.join()
+            voice_logger.info("Listening")
+            audio = self.recognizer.listen(source)
+            try:
+                # Recognize speech using Google Speech Recognition
+                text = self.recognizer.recognize_google(audio)
+                logger.debug("You said: %s", text)
+                active_buttons = [text for text, btn in self.buttons.items() if btn.cget('state') == tk.NORMAL]
+                best_match = process.extractOne(text, active_buttons)
+                logger.debug("Best match: %s", best_match)
+                self.trigger_button(best_match)
+            except sr.UnknownValueError:
+                msg = "Google Speech Recognition could not understand audio"
+                logger.error(msg)
+                voice_logger.error(msg)
+            except sr.RequestError as e:
+                msg = f"Could not request results from Google Speech Recognition service; {e}"
+                logger.error(msg)
+                voice_logger.error(msg)
+
+    def listen(self):
+        self.executor.submit(self._listen)
 
 
 class TTSHandler(logging.Handler):
@@ -157,6 +196,7 @@ class PoolStatsApp(tk.Tk):
 
         self.team_buttons: dict[str, list[tk.Button]] = {'team1': [], 'team2': []}
         self.team_additional_shot_buttons: dict[str, dict[str, tk.Button]] = {'team1': {}, 'team2': {}}
+        self.action_buttons: list[str] = []
 
         # GUI elements
         self.break_buttons = []
@@ -165,6 +205,9 @@ class PoolStatsApp(tk.Tk):
         self.state(gui_state)
         self.setup_ui()
         self.update_stats_display()
+        buttons = self.action_buttons + self.team_buttons['team1'] + self.team_buttons['team2'] + list(self.team_additional_shot_buttons['team1'].values()) + list(self.team_additional_shot_buttons['team2'].values())
+        self.buttons = {btn.cget("text"): btn for btn in buttons}
+        self.listener = Listener(self.buttons)
 
         # Initializing the start_time and end_time
         self.start_time: datetime | None = None
@@ -189,7 +232,6 @@ class PoolStatsApp(tk.Tk):
         self.active_team_history.append(self.active_team)
         self.shots_left_history.append(self.shots_left)
         self.shots_taken_current_visit_history.append(self.shots_taken_current_visit)
-        logger.info(self.shots_taken_current_visit_history)
 
     def call_out_next_color(self, level: int) -> None:
         color = self.team1_color if self.active_team == "team1" else self.team2_color
@@ -215,6 +257,7 @@ class PoolStatsApp(tk.Tk):
             if self.shots_taken_current_visit_history:
                 self.shots_taken_current_visit = self.shots_taken_current_visit_history.pop()
             self.call_out_next_color(logging.INFO)
+            self.listener.listen()
         else:
             messagebox.showwarning("Undo", "Cannot undo anymore!")
 
@@ -279,6 +322,7 @@ class PoolStatsApp(tk.Tk):
         btn = tk.Button(self, text=text)
         btn.configure(command=lambda btn=btn: callback(btn))
         btn.grid(row=row, column=column, pady=20)
+        self.action_buttons.append(btn)
 
     def add_action(self, text: str, append: bool = False) -> None:
         if append:
@@ -483,6 +527,7 @@ class PoolStatsApp(tk.Tk):
 
         voice_level = logging.INFO if team_changed else logging.DEBUG    # Implemented so can be changed
         self.call_out_next_color(voice_level)
+        self.listener.listen()
 
     @staticmethod
     def generate_stats_text(stats: TeamStats, prev_stats: TeamStats, name: str = "",
@@ -638,7 +683,7 @@ if __name__ == "__main__":
     logger.propagate = False
     voice_logger.setLevel(level=logging.getLevelName(args.voice_log_level))
     voice_formatter = logging.Formatter('%(message)s')
-    voice_queue_handler.setFormatter(voice_formatter)
+    tts_handler.setFormatter(voice_formatter)
     voice_logger.addHandler(voice_queue_handler)
     voice_logger.propagate = False
 
