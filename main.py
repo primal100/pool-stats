@@ -1,4 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor
+import re
 import tkinter as tk
 import tkinter.messagebox as messagebox
 import copy
@@ -16,6 +17,8 @@ from typing import Callable, TypedDict, Literal
 
 voice_rate = 150
 voice: Literal['male', 'female'] = 'male'
+phrase_time_limit = 4
+minimum_voice_score = 60
 default_undo_snapshot_size = 5
 geometry = "1600x500"
 gui_state = "normal"
@@ -35,6 +38,37 @@ voice_logger = logging.getLogger("voice")
 voice_queue: Queue[logging.LogRecord] = Queue()
 
 
+
+class TeamStats(TypedDict):
+    visits: int
+    easy_shots: int
+    difficult_shots: int
+    safety_shots: int
+    break_shots: int
+    easy_potted: int
+    difficult_potted: int
+    safety_potted: int
+    break_potted: int
+    additional_potted: int
+    fouls: int
+    foul_only_shots: int
+
+
+class OverallStats(TypedDict):
+    team1: TeamStats
+    team2: TeamStats
+    total: TeamStats
+
+
+TeamsLiteral = Literal["team1", "team2"]
+
+
+StatsLiteral = Literal[
+    'visits', 'easy_shots', 'difficult_shots', 'safety_shots', 'break_shots',
+    'easy_potted', 'difficult_potted', 'safety_potted', 'break_potted', 'additional_potted', 'fouls'
+]
+
+
 class Listener:
     def __init__(self, buttons: dict[str, tk.Button]):
         self.recognizer = sr.Recognizer()
@@ -46,30 +80,42 @@ class Listener:
         logger.info('Voice requested button click: %s', text)
         button.invoke()
 
-    def _listen(self):
+    def _listen(self, active_team: TeamsLiteral | None):
         with sr.Microphone() as source:
-            voice_queue.join()
-            voice_logger.info("Listening")
-            audio = self.recognizer.listen(source)
-            try:
-                # Recognize speech using Google Speech Recognition
-                text = self.recognizer.recognize_google(audio)
-                logger.debug("You said: %s", text)
-                active_buttons = [text for text, btn in self.buttons.items() if btn.cget('state') == tk.NORMAL]
-                best_match = process.extractOne(text, active_buttons)
-                logger.debug("Best match: %s", best_match)
-                self.trigger_button(best_match)
-            except sr.UnknownValueError:
-                msg = "Google Speech Recognition could not understand audio"
-                logger.error(msg)
-                voice_logger.error(msg)
-            except sr.RequestError as e:
-                msg = f"Could not request results from Google Speech Recognition service; {e}"
-                logger.error(msg)
-                voice_logger.error(msg)
+            while True:
+                voice_queue.join()
+                voice_logger.info("Listening")
+                logger.info('Listening')
+                voice_queue.join()
+                audio = self.recognizer.listen(source, phrase_time_limit=phrase_time_limit)
+                try:
+                    # Recognize speech using Google Speech Recognition
+                    logger.info("Got audio, trying to recognise")
+                    text = self.recognizer.recognize_google(audio)
+                    logger.debug("You said: %s", text)
+                    text = re.sub(r'\b(file|bowel|spiral)\b', 'foul', text, re.I)
+                    text = re.sub(r'\b(parted)\b', 'potted', text, re.I)
+                    text = re.sub(r'\b(part)\b', 'pot', text, re.I)
+                    text = re.sub(r'\b(ball)\b', 'shot', text, re.I)
+                    text = re.sub(r'\b(brake)\b', 'break', text, re.I)
+                    if any(word in text for word in ('foul', 'potted', 'missed', 'shot')) and len(text.split()) > 1:
+                        active_buttons = [text for text, btn in self.buttons.items() if btn.cget('state') == tk.NORMAL]
+                        print(active_buttons)
+                        best_match, score = process.extractOne(text, active_buttons)
+                        logger.debug("Best match: %s", best_match)
+                        logger.debug('Match %s had a score of %s', best_match, score)
+                        if score >= minimum_voice_score:
+                            self.trigger_button(best_match)
+                            break
+                except sr.UnknownValueError:
+                    msg = "Google Speech Recognition could not understand audio"
+                    logger.error(msg)
+                except sr.RequestError as e:
+                    msg = f"Could not request results from Google Speech Recognition service; {e}"
+                    logger.error(msg)
 
-    def listen(self):
-        self.executor.submit(self._listen)
+    def listen(self, active_team: TeamsLiteral | None):
+        self.executor.submit(self._listen, active_team)
 
 
 class TTSHandler(logging.Handler):
@@ -109,36 +155,6 @@ class IncorrectVisitsError(BaseException):
 
 class WrongTeamShotError(BaseException):
     pass
-
-
-class TeamStats(TypedDict):
-    visits: int
-    easy_shots: int
-    difficult_shots: int
-    safety_shots: int
-    break_shots: int
-    easy_potted: int
-    difficult_potted: int
-    safety_potted: int
-    break_potted: int
-    additional_potted: int
-    fouls: int
-    foul_only_shots: int
-
-
-class OverallStats(TypedDict):
-    team1: TeamStats
-    team2: TeamStats
-    total: TeamStats
-
-
-TeamsLiteral = Literal["team1", "team2"]
-
-
-StatsLiteral = Literal[
-    'visits', 'easy_shots', 'difficult_shots', 'safety_shots', 'break_shots',
-    'easy_potted', 'difficult_potted', 'safety_potted', 'break_potted', 'additional_potted', 'fouls'
-]
 
 
 class PoolStatsApp(tk.Tk):
@@ -196,18 +212,15 @@ class PoolStatsApp(tk.Tk):
 
         self.team_buttons: dict[str, list[tk.Button]] = {'team1': [], 'team2': []}
         self.team_additional_shot_buttons: dict[str, dict[str, tk.Button]] = {'team1': {}, 'team2': {}}
-        self.action_buttons: list[str] = []
+        self.action_buttons: list[tk.Button] = []
 
         # GUI elements
-        self.break_buttons = []
+        self.break_buttons: dict[str, list] = {'team1': [], 'team2': []}
         self.stats_history = []
         self.action_log_history = []
         self.state(gui_state)
         self.setup_ui()
         self.update_stats_display()
-        buttons = self.action_buttons + self.team_buttons['team1'] + self.team_buttons['team2'] + list(self.team_additional_shot_buttons['team1'].values()) + list(self.team_additional_shot_buttons['team2'].values())
-        self.buttons = {btn.cget("text"): btn for btn in buttons}
-        self.listener = Listener(self.buttons)
 
         # Initializing the start_time and end_time
         self.start_time: datetime | None = None
@@ -216,6 +229,17 @@ class PoolStatsApp(tk.Tk):
         self.break_team: TeamsLiteral | None = None
         self.set_active_team(None)
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
+        self.buttons = {btn.cget("text"): btn for btn in self.action_buttons}
+        self.buttons.update({f'Team 1 {btn.cget("text")}': btn for btn in self.break_buttons['team1']})
+        self.buttons.update({f'Team 1 {btn.cget("text")}': btn for btn in self.team_buttons['team1']})
+        self.buttons.update({f'Team 1 {btn.cget("text")}': btn for btn in list(self.team_additional_shot_buttons['team1'].values())})
+        self.buttons.update({f'Team 2 {btn.cget("text")}': btn for btn in self.break_buttons['team2']})
+        self.buttons.update({f'Team 2 {btn.cget("text")}': btn for btn in self.team_buttons['team2']})
+        self.buttons.update({f'Team 2 {btn.cget("text")}': btn for btn in list(self.team_additional_shot_buttons['team2'].values())})
+        print(self.buttons)
+        print(len(self.buttons))
+        self.listener = Listener(self.buttons)
+        self.listener.listen(self.active_team)
 
     def store_snapshots(self) -> None:
         """Store the current state of stats for undo operation."""
@@ -257,7 +281,7 @@ class PoolStatsApp(tk.Tk):
             if self.shots_taken_current_visit_history:
                 self.shots_taken_current_visit = self.shots_taken_current_visit_history.pop()
             self.call_out_next_color(logging.INFO)
-            self.listener.listen()
+            self.listener.listen(self.active_team)
         else:
             messagebox.showwarning("Undo", "Cannot undo anymore!")
 
@@ -305,7 +329,7 @@ class PoolStatsApp(tk.Tk):
 
             # Storing reference to the break buttons
             if "break" in action:
-                self.break_buttons.append(btn)
+                self.break_buttons[team].append(btn)
             elif any(a == action for a in ('additional_potted', 'fouls')):
                 self.team_additional_shot_buttons[team][action] = btn
             else:
@@ -357,8 +381,10 @@ class PoolStatsApp(tk.Tk):
                        self.team_buttons["team2"] + list(self.team_additional_shot_buttons["team2"].values()):
                 btn.config(state=tk.DISABLED)
             # Re-enable break buttons
-            for button in self.break_buttons:
-                button.config(state=tk.NORMAL)
+            for buttons in self.break_buttons.values():
+                for btn in buttons:
+                    print('Setting break button to normal')
+                    btn.config(state=tk.NORMAL)
 
     def setup_ui(self) -> None:
         # Team 1 Buttons
@@ -467,8 +493,9 @@ class PoolStatsApp(tk.Tk):
         if "break" in action and not self.start_time:
             self.start_time = datetime.now()
             # Disable both break buttons if a break shot is recorded
-            for break_btn in self.break_buttons:
-                break_btn.config(state=tk.DISABLED)
+            for break_btns in self.break_buttons.values():
+                for btn in break_btns:
+                    btn.config(state=tk.DISABLED)
             self.break_team = team
             self.set_active_team(team) if action == "break_potted" else self.set_active_team(other_team)
 
@@ -527,7 +554,7 @@ class PoolStatsApp(tk.Tk):
 
         voice_level = logging.INFO if team_changed else logging.DEBUG    # Implemented so can be changed
         self.call_out_next_color(voice_level)
-        self.listener.listen()
+        self.listener.listen(self.active_team)
 
     @staticmethod
     def generate_stats_text(stats: TeamStats, prev_stats: TeamStats, name: str = "",
