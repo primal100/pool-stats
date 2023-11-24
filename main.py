@@ -16,7 +16,7 @@ from typing import Callable, TypedDict, Literal
 
 
 voice_rate = 150
-voice: Literal['male', 'female'] = 'male'
+voice: Literal['male', 'female'] = '`female'
 phrase_time_limit = 4
 minimum_voice_score = 60
 default_undo_snapshot_size = 5
@@ -36,7 +36,6 @@ voice_logger = logging.getLogger("voice")
 
 
 voice_queue: Queue[logging.LogRecord] = Queue()
-
 
 
 class TeamStats(TypedDict):
@@ -236,8 +235,7 @@ class PoolStatsApp(tk.Tk):
         self.buttons.update({f'Team 2 {btn.cget("text")}': btn for btn in self.break_buttons['team2']})
         self.buttons.update({f'Team 2 {btn.cget("text")}': btn for btn in self.team_buttons['team2']})
         self.buttons.update({f'Team 2 {btn.cget("text")}': btn for btn in list(self.team_additional_shot_buttons['team2'].values())})
-        print(self.buttons)
-        print(len(self.buttons))
+        self.active_buttons_history: list[list[tk.Button]] = []
         self.listener = Listener(self.buttons)
         self.listener.listen(self.active_team)
 
@@ -247,8 +245,8 @@ class PoolStatsApp(tk.Tk):
         stats_snapshot = copy.deepcopy(self.team_stats)
         action_log_snapshot = self.action_log.get('1.0', tk.END)
         # Check if length exceeds the limit
-        for snapshots in (self.stats_history, self.action_log_history,
-                          self.active_team_history, self.shots_left_history, self.shots_taken_current_visit_history):
+        for snapshots in (self.stats_history, self.action_log_history, self.active_team_history,
+                          self.shots_left_history, self.shots_taken_current_visit_history, self.active_buttons_history):
             if len(snapshots) >= self.undo_snapshot_size:
                 snapshots.pop(0)  # Remove the oldest snapshot
         self.stats_history.append(stats_snapshot)
@@ -256,6 +254,7 @@ class PoolStatsApp(tk.Tk):
         self.active_team_history.append(self.active_team)
         self.shots_left_history.append(self.shots_left)
         self.shots_taken_current_visit_history.append(self.shots_taken_current_visit)
+        self.active_buttons_history.append([text for text, btn in self.buttons.items() if btn.cget('state') == tk.NORMAL])
 
     def call_out_next_color(self, level: int) -> None:
         color = self.team1_color if self.active_team == "team1" else self.team2_color
@@ -280,6 +279,11 @@ class PoolStatsApp(tk.Tk):
                 self.shots_left = self.shots_left_history.pop()
             if self.shots_taken_current_visit_history:
                 self.shots_taken_current_visit = self.shots_taken_current_visit_history.pop()
+            if self.active_buttons_history:
+                active_buttons = self.active_buttons_history.pop()
+                for button in self.buttons.values():
+                    state = tk.NORMAL if button in active_buttons else tk.DISABLED
+                    button.config(state)
             self.call_out_next_color(logging.INFO)
             self.listener.listen(self.active_team)
         else:
@@ -489,6 +493,8 @@ class PoolStatsApp(tk.Tk):
         other_team: TeamsLiteral = "team1" if team == "team2" else "team2"  # Incorrect type error in pycharm
         team_changed = False
 
+        self.store_snapshots()
+
         # Set the start time if it's a break shot and start time is not set
         if "break" in action and not self.start_time:
             self.start_time = datetime.now()
@@ -509,8 +515,6 @@ class PoolStatsApp(tk.Tk):
                 raise IncorrectVisitsError(
                     f'This would cause number of visits of break team {self.break_team} to be less than {team}')
             increment_visits = True
-
-        self.store_snapshots()
 
         # Following needs to be done after snapshots are stored
         if increment_visits:
